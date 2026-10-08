@@ -1,0 +1,9 @@
+# lint-staged 17 needs Node >= 22.22 and the repo targets Node 24. On an older PATH node the hook
+# crashes and lint-staged reverts the staged files. Stop early with a clear message instead.
+node -e "process.exit(Number(process.versions.node.split('.')[0]) >= 24 ? 0 : 1)" || {
+  echo "pre-commit: Node 24+ is required (PATH node is $(node -v)). Put Node 24 first on PATH." >&2
+  exit 1
+}
+
+# ESLint (--fix) and Prettier (--write) on the staged files; rules in package.json "lint-staged".
+lint-staged

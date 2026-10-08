@@ -1,9 +1,8 @@
-import { defineConfig } from 'vitest/config'
-import react from '@vitejs/plugin-react'
-import tsconfigPaths from 'vite-tsconfig-paths'
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
-  plugins: [tsconfigPaths(), react()],
+  // Resolves tsconfig's `paths` (`@/*`, `@payload-config`); built into Vite 8.
+  resolve: { tsconfigPaths: true },
   test: {
     // Local API tests run Payload against Postgres and MinIO; there is no DOM code to test.
     environment: 'node',
@@ -13,4 +12,4 @@ export default defineConfig({
     setupFiles: ['./vitest.setup.ts'],
     include: ['tests/int/**/*.int.spec.ts'],
   },
-})
+});

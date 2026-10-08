@@ -9,13 +9,15 @@
     "build": "cross-env NODE_OPTIONS=--no-deprecation next build",
     "create-bucket": "tsx scripts/create-bucket.ts",
     "dev": "cross-env NODE_OPTIONS=--no-deprecation next dev",
+    "format": "prettier --check .",
+    "format:write": "prettier --write .",
     "generate:importmap": "cross-env NODE_OPTIONS=--no-deprecation payload generate:importmap",
     "generate:types": "cross-env NODE_OPTIONS=--no-deprecation payload generate:types",
-    "lint": "cross-env NODE_OPTIONS=--no-deprecation eslint .",
+    "lint": "eslint .",
     "payload": "cross-env NODE_OPTIONS=--no-deprecation payload",
+    "prepare": "husky || true",
     "start": "cross-env NODE_OPTIONS=--no-deprecation next start",
-    "test": "npm run test:int && npm run test:e2e",
-    "test:e2e": "cross-env NODE_OPTIONS=\"--no-deprecation --import=tsx/esm\" playwright test --config=playwright.config.ts",
+    "test": "npm run test:int",
     "test:int": "cross-env NODE_OPTIONS=--no-deprecation vitest run --config ./vitest.config.mts",
     "typecheck": "tsc --noEmit"
   },
@@ -35,26 +37,32 @@
     "sharp": "0.35.5"
   },
   "devDependencies": {
-    "@eslint/eslintrc": "3.3.7",
-    "@playwright/test": "1.58.2",
-    "@testing-library/react": "16.3.0",
     "@types/node": "24.19.1",
     "@types/pg": "8.20.0",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
-    "@vitejs/plugin-react": "6.1.2",
     "eslint": "9.39.5",
     "eslint-config-next": "16.4.0",
-    "jsdom": "28.0.0",
+    "husky": "9.1.7",
+    "lint-staged": "17.6.0",
     "pg": "8.20.0",
     "prettier": "3.9.9",
     "tsx": "4.23.15",
     "typescript": "6.0.3",
+    "typescript-eslint": "8.71.1",
     "vite": "8.3.4",
-    "vite-tsconfig-paths": "6.0.5",
     "vitest": "5.0.3"
   },
   "engines": {
     "node": ">=24"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}": [
+      "eslint --fix --no-warn-ignored",
+      "prettier --write"
+    ],
+    "*.{json,jsonc,md,css,scss,yml,yaml}": [
+      "prettier --write"
+    ]
   }
 }

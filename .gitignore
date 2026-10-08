@@ -36,9 +36,3 @@ next-env.d.ts
 
 # local uploads (media lives in MinIO; Payload's disk fallback must never be committed)
 /media/
-
-# Playwright
-/test-results/
-/playwright-report/
-/blob-report/
-/playwright/.cache/

@@ -19,34 +19,34 @@ import {
   DeleteObjectsCommand,
   ListObjectsV2Command,
   S3Client,
-} from '@aws-sdk/client-s3'
-import { spawn } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
-import path from 'node:path'
-import pg from 'pg'
-import type { TestProject } from 'vitest/node'
+} from '@aws-sdk/client-s3';
+import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import path from 'node:path';
+import pg from 'pg';
+import type { TestProject } from 'vitest/node';
 
-import { loadDotEnvFile, requireEnv, s3ClientConfig, type ServerEnv } from '../../src/env'
+import { loadDotEnvFile, requireEnv, s3ClientConfig, type ServerEnv } from '../../src/env';
 import {
   assertThrowawayTarget,
   parseDatabaseUrl,
   testBucketName,
   testDatabaseName,
-} from './throwaway'
+} from './throwaway';
 
 export default async function setup(project: TestProject): Promise<() => Promise<void>> {
-  const base: NodeJS.ProcessEnv = { ...process.env }
-  loadDotEnvFile(path.join(project.config.root, '.env'), base)
+  const base: NodeJS.ProcessEnv = { ...process.env };
+  loadDotEnvFile(path.join(project.config.root, '.env'), base);
   const server = requireEnv(
     ['DATABASE_URL', 'S3_ENDPOINT', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY'],
     base,
-  )
-  const migrateTimeoutMs = readMigrateTimeoutMs(base)
+  );
+  const migrateTimeoutMs = readMigrateTimeoutMs(base);
 
-  const suffix = randomBytes(6).toString('hex')
-  const database = testDatabaseName(suffix)
-  const bucket = testBucketName(suffix)
-  const adminUrl = withDatabase(server.DATABASE_URL, 'postgres')
+  const suffix = randomBytes(6).toString('hex');
+  const database = testDatabaseName(suffix);
+  const bucket = testBucketName(suffix);
+  const adminUrl = withDatabase(server.DATABASE_URL, 'postgres');
   const testEnv: ServerEnv = {
     DATABASE_URL: withDatabase(server.DATABASE_URL, database),
     PAYLOAD_SECRET: randomBytes(32).toString('hex'),
@@ -54,68 +54,74 @@ export default async function setup(project: TestProject): Promise<() => Promise
     S3_BUCKET: bucket,
     S3_ACCESS_KEY_ID: server.S3_ACCESS_KEY_ID,
     S3_SECRET_ACCESS_KEY: server.S3_SECRET_ACCESS_KEY,
-  }
+  };
   // The names are generated above, so this cannot fail; it also makes the identifiers safe to
   // interpolate into CREATE/DROP DATABASE below.
-  assertThrowawayTarget(testEnv)
-  const s3 = new S3Client(s3ClientConfig(testEnv))
+  assertThrowawayTarget(testEnv);
+  const s3 = new S3Client(s3ClientConfig(testEnv));
 
   const teardown = async (): Promise<void> => {
-    const errors: unknown[] = []
+    const errors: unknown[] = [];
     try {
       // The workers have exited; FORCE also ends any connection a crashed worker left behind.
-      await adminQuery(adminUrl, `DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`)
+      await adminQuery(adminUrl, `DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
     } catch (error) {
-      errors.push(error)
+      errors.push(error);
     }
     try {
-      await deleteBucket(s3, bucket)
+      await deleteBucket(s3, bucket);
     } catch (error) {
-      errors.push(error)
+      errors.push(error);
     }
-    s3.destroy()
+    s3.destroy();
     if (errors.length > 0) {
-      throw new AggregateError(errors, `[int setup] teardown failed for ${database} / ${bucket}`)
+      throw new AggregateError(errors, `[int setup] teardown failed for ${database} / ${bucket}`);
     }
-  }
+  };
 
-  console.log(`[int setup] throwaway database ${database}, bucket ${bucket}`)
+  console.log(`[int setup] throwaway database ${database}, bucket ${bucket}`);
   try {
-    await adminQuery(adminUrl, `CREATE DATABASE "${database}"`)
-    await s3.send(new CreateBucketCommand({ Bucket: bucket }))
-    Object.assign(process.env, testEnv)
-    project.provide('testEnv', testEnv)
+    await adminQuery(adminUrl, `CREATE DATABASE "${database}"`);
+    await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+    Object.assign(process.env, testEnv);
+    project.provide('testEnv', testEnv);
     // The child gets the run's env explicitly; the CLI's own .env loading never overrides a set
     // variable, so it cannot fall back to the dev database.
-    await migrate(project.config.root, { ...process.env, ...testEnv }, migrateTimeoutMs)
+    await migrate(project.config.root, { ...process.env, ...testEnv }, migrateTimeoutMs);
   } catch (error) {
-    await teardown().catch((teardownError: unknown) => console.error(teardownError))
-    throw error
+    await teardown().catch((teardownError: unknown) => console.error(teardownError));
+    throw error;
   }
-  return teardown
+  return teardown;
 }
 
 // A migrate on an idle host takes seconds; a loaded one (parallel builds, Docker) has taken minutes.
-const DEFAULT_MIGRATE_TIMEOUT_MS = 600_000
+// The default stays under 10 minutes, a common limit for a single foreground command, so a hung
+// migrate is stopped here, and the teardown still drops the database and bucket, before the caller
+// kills the whole run.
+const DEFAULT_MIGRATE_TIMEOUT_MS = 480_000;
+// setTimeout's limit (2^31 - 1 ms, about 24.8 days); a larger delay fires after 1 ms instead.
+const MAX_MIGRATE_TIMEOUT_MS = 2_147_483_647;
 
 /** INT_MIGRATE_TIMEOUT_MS (milliseconds, process env or .env) overrides the default. */
 function readMigrateTimeoutMs(env: NodeJS.ProcessEnv): number {
-  const raw = env.INT_MIGRATE_TIMEOUT_MS?.trim()
-  if (!raw) return DEFAULT_MIGRATE_TIMEOUT_MS
-  const value = Number(raw)
-  if (!Number.isSafeInteger(value) || value <= 0) {
+  const raw = env.INT_MIGRATE_TIMEOUT_MS?.trim();
+  if (!raw) return DEFAULT_MIGRATE_TIMEOUT_MS;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_MIGRATE_TIMEOUT_MS) {
     throw new Error(
-      `[int setup] INT_MIGRATE_TIMEOUT_MS must be a positive whole number of milliseconds, got "${raw}"`,
-    )
+      '[int setup] INT_MIGRATE_TIMEOUT_MS must be a whole number of milliseconds from 1 to ' +
+        `${MAX_MIGRATE_TIMEOUT_MS}, got "${raw}"`,
+    );
   }
-  return value
+  return value;
 }
 
 /** Runs `payload migrate` (the committed migrations) against env.DATABASE_URL. */
 async function migrate(root: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<void> {
-  const bin = path.join(root, 'node_modules', 'payload', 'bin.js')
-  const started = Date.now()
-  const elapsed = (): string => `${((Date.now() - started) / 1000).toFixed(1)}s`
+  const bin = path.join(root, 'node_modules', 'payload', 'bin.js');
+  const started = Date.now();
+  const elapsed = (): string => `${((Date.now() - started) / 1000).toFixed(1)}s`;
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, [bin, 'migrate'], {
       cwd: root,
@@ -123,20 +129,20 @@ async function migrate(root: string, env: NodeJS.ProcessEnv, timeoutMs: number):
       // No stdin: a confirmation prompt (only shown for a dev-pushed database) cannot wait for
       // input, and the timeout stops anything else that hangs.
       stdio: ['ignore', 'inherit', 'inherit'],
-    })
-    let timedOut = false
+    });
+    let timedOut = false;
     const timer = setTimeout(() => {
-      timedOut = true
-      child.kill()
-    }, timeoutMs)
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
     child.on('error', (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
+      clearTimeout(timer);
+      reject(error);
+    });
     child.on('exit', (code, signal) => {
-      clearTimeout(timer)
+      clearTimeout(timer);
       if (code === 0) {
-        resolve()
+        resolve();
       } else if (timedOut) {
         reject(
           new Error(
@@ -145,52 +151,52 @@ async function migrate(root: string, env: NodeJS.ProcessEnv, timeoutMs: number):
               'on a "data loss" confirmation means the database was pushed by next dev; the ' +
               "run's throwaway database never should be.",
           ),
-        )
+        );
       } else {
         reject(
           new Error(
             `[int setup] payload migrate failed (${signal ?? `exit ${code}`}) after ${elapsed()}; ` +
               'its output is above.',
           ),
-        )
+        );
       }
-    })
-  })
+    });
+  });
 }
 
 function withDatabase(connectionString: string, database: string): string {
-  const url = parseDatabaseUrl(connectionString)
-  url.pathname = `/${database}`
-  return url.toString()
+  const url = parseDatabaseUrl(connectionString);
+  url.pathname = `/${database}`;
+  return url.toString();
 }
 
 async function adminQuery(connectionString: string, sql: string): Promise<void> {
-  const client = new pg.Client({ connectionString })
-  await client.connect()
+  const client = new pg.Client({ connectionString });
+  await client.connect();
   try {
-    await client.query(sql)
+    await client.query(sql);
   } finally {
-    await client.end()
+    await client.end();
   }
 }
 
 async function deleteBucket(s3: S3Client, bucket: string): Promise<void> {
-  let continuationToken: string | undefined
+  let continuationToken: string | undefined;
   do {
-    let page
+    let page;
     try {
       page = await s3.send(
         new ListObjectsV2Command({ Bucket: bucket, ContinuationToken: continuationToken }),
-      )
+      );
     } catch (error) {
-      if ((error as { name?: string }).name === 'NoSuchBucket') return
-      throw error
+      if ((error as { name?: string }).name === 'NoSuchBucket') return;
+      throw error;
     }
-    const objects = (page.Contents ?? []).flatMap(({ Key }) => (Key ? [{ Key }] : []))
+    const objects = (page.Contents ?? []).flatMap(({ Key }) => (Key ? [{ Key }] : []));
     if (objects.length > 0) {
-      await s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: objects } }))
+      await s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: objects } }));
     }
-    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined
-  } while (continuationToken)
-  await s3.send(new DeleteBucketCommand({ Bucket: bucket }))
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (continuationToken);
+  await s3.send(new DeleteBucketCommand({ Bucket: bucket }));
 }
