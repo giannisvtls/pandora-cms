@@ -23,9 +23,9 @@ node_modules/
 # debug
 npm-debug.log*
 
-# local env files (.env.example is committed)
-.env
-.env*.local
+# env files: every .env* holds real values, except the committed template
+.env*
+!.env.example
 
 # vercel
 .vercel

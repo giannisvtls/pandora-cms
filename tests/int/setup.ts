@@ -27,7 +27,12 @@ import pg from 'pg'
 import type { TestProject } from 'vitest/node'
 
 import { loadDotEnvFile, requireEnv, s3ClientConfig, type ServerEnv } from '../../src/env'
-import { assertThrowawayTarget, testBucketName, testDatabaseName } from './throwaway'
+import {
+  assertThrowawayTarget,
+  parseDatabaseUrl,
+  testBucketName,
+  testDatabaseName,
+} from './throwaway'
 
 export default async function setup(project: TestProject): Promise<() => Promise<void>> {
   const base: NodeJS.ProcessEnv = { ...process.env }
@@ -36,6 +41,7 @@ export default async function setup(project: TestProject): Promise<() => Promise
     ['DATABASE_URL', 'S3_ENDPOINT', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY'],
     base,
   )
+  const migrateTimeoutMs = readMigrateTimeoutMs(base)
 
   const suffix = randomBytes(6).toString('hex')
   const database = testDatabaseName(suffix)
@@ -81,7 +87,7 @@ export default async function setup(project: TestProject): Promise<() => Promise
     project.provide('testEnv', testEnv)
     // The child gets the run's env explicitly; the CLI's own .env loading never overrides a set
     // variable, so it cannot fall back to the dev database.
-    await migrate(project.config.root, { ...process.env, ...testEnv })
+    await migrate(project.config.root, { ...process.env, ...testEnv }, migrateTimeoutMs)
   } catch (error) {
     await teardown().catch((teardownError: unknown) => console.error(teardownError))
     throw error
@@ -89,11 +95,27 @@ export default async function setup(project: TestProject): Promise<() => Promise
   return teardown
 }
 
-const MIGRATE_TIMEOUT_MS = 180_000
+// A migrate on an idle host takes seconds; a loaded one (parallel builds, Docker) has taken minutes.
+const DEFAULT_MIGRATE_TIMEOUT_MS = 600_000
+
+/** INT_MIGRATE_TIMEOUT_MS (milliseconds, process env or .env) overrides the default. */
+function readMigrateTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.INT_MIGRATE_TIMEOUT_MS?.trim()
+  if (!raw) return DEFAULT_MIGRATE_TIMEOUT_MS
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(
+      `[int setup] INT_MIGRATE_TIMEOUT_MS must be a positive whole number of milliseconds, got "${raw}"`,
+    )
+  }
+  return value
+}
 
 /** Runs `payload migrate` (the committed migrations) against env.DATABASE_URL. */
-async function migrate(root: string, env: NodeJS.ProcessEnv): Promise<void> {
+async function migrate(root: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<void> {
   const bin = path.join(root, 'node_modules', 'payload', 'bin.js')
+  const started = Date.now()
+  const elapsed = (): string => `${((Date.now() - started) / 1000).toFixed(1)}s`
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, [bin, 'migrate'], {
       cwd: root,
@@ -101,18 +123,43 @@ async function migrate(root: string, env: NodeJS.ProcessEnv): Promise<void> {
       // No stdin: a confirmation prompt (only shown for a dev-pushed database) cannot wait for
       // input, and the timeout stops anything else that hangs.
       stdio: ['ignore', 'inherit', 'inherit'],
-      timeout: MIGRATE_TIMEOUT_MS,
     })
-    child.on('error', reject)
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      child.kill()
+    }, timeoutMs)
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
     child.on('exit', (code, signal) => {
-      if (code === 0) resolve()
-      else reject(new Error(`[int setup] payload migrate failed (${signal ?? `exit ${code}`})`))
+      clearTimeout(timer)
+      if (code === 0) {
+        resolve()
+      } else if (timedOut) {
+        reject(
+          new Error(
+            `[int setup] payload migrate was stopped after ${elapsed()} (limit ${timeoutMs} ms). ` +
+              'A loaded host can need longer: raise INT_MIGRATE_TIMEOUT_MS. A migrate that waits ' +
+              'on a "data loss" confirmation means the database was pushed by next dev; the ' +
+              "run's throwaway database never should be.",
+          ),
+        )
+      } else {
+        reject(
+          new Error(
+            `[int setup] payload migrate failed (${signal ?? `exit ${code}`}) after ${elapsed()}; ` +
+              'its output is above.',
+          ),
+        )
+      }
     })
   })
 }
 
 function withDatabase(connectionString: string, database: string): string {
-  const url = new URL(connectionString)
+  const url = parseDatabaseUrl(connectionString)
   url.pathname = `/${database}`
   return url.toString()
 }

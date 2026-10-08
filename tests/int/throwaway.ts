@@ -15,9 +15,27 @@ declare module 'vitest' {
 export const testDatabaseName = (suffix: string): string => `pandora_cms_test_${suffix}`
 export const testBucketName = (suffix: string): string => `pandora-cms-test-${suffix}`
 
+/**
+ * Parses a Postgres connection string. On a malformed one, `new URL()` throws ERR_INVALID_URL with
+ * the whole string (password included) in its `input` property, which Vitest prints; the error
+ * thrown here carries neither the string nor that error.
+ */
+export function parseDatabaseUrl(connectionString: string): URL {
+  let url: URL
+  try {
+    url = new URL(connectionString)
+  } catch {
+    throw new Error('DATABASE_URL is not a valid postgres URL')
+  }
+  if (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') {
+    throw new Error('DATABASE_URL is not a valid postgres URL')
+  }
+  return url
+}
+
 /** The database name in a Postgres connection string (never logs the string itself). */
 export const databaseNameOf = (connectionString: string): string =>
-  decodeURIComponent(new URL(connectionString).pathname.replace(/^\//, ''))
+  decodeURIComponent(parseDatabaseUrl(connectionString).pathname.replace(/^\//, ''))
 
 /** Throws unless the env points at a throwaway database and bucket. */
 export function assertThrowawayTarget(env: Pick<ServerEnv, 'DATABASE_URL' | 'S3_BUCKET'>): void {
