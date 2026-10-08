@@ -1,0 +1,149 @@
+// Vitest globalSetup for the Local API tests. Runs once per `vitest run`, in the main process,
+// before any worker starts.
+//
+// Each run gets its own Postgres database (pandora_cms_test_<hex>) and MinIO bucket
+// (pandora-cms-test-<hex>) on the servers named by DATABASE_URL and S3_ENDPOINT (process env
+// first, then .env). The dev database and bucket are never opened, so concurrent runs and a
+// running `next dev` cannot collide.
+//   1. create the database and the bucket;
+//   2. put the run's env in process.env (inherited by the workers) and provide it to the workers
+//      (applied by vitest.setup.ts before a test file imports the config);
+//   3. apply the committed migrations to the new database with `payload migrate`, in a child
+//      process: the Postgres adapter keeps a pool client checked out until the process exits
+//      (`payload.destroy()` does not end the pool), so an in-process Payload here would hold a
+//      connection that the teardown's DROP DATABASE then kills, crashing the run.
+// Teardown drops the database and empties and deletes the bucket.
+import {
+  CreateBucketCommand,
+  DeleteBucketCommand,
+  DeleteObjectsCommand,
+  ListObjectsV2Command,
+  S3Client,
+} from '@aws-sdk/client-s3'
+import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import path from 'node:path'
+import pg from 'pg'
+import type { TestProject } from 'vitest/node'
+
+import { loadDotEnvFile, requireEnv, s3ClientConfig, type ServerEnv } from '../../src/env'
+import { assertThrowawayTarget, testBucketName, testDatabaseName } from './throwaway'
+
+export default async function setup(project: TestProject): Promise<() => Promise<void>> {
+  const base: NodeJS.ProcessEnv = { ...process.env }
+  loadDotEnvFile(path.join(project.config.root, '.env'), base)
+  const server = requireEnv(
+    ['DATABASE_URL', 'S3_ENDPOINT', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY'],
+    base,
+  )
+
+  const suffix = randomBytes(6).toString('hex')
+  const database = testDatabaseName(suffix)
+  const bucket = testBucketName(suffix)
+  const adminUrl = withDatabase(server.DATABASE_URL, 'postgres')
+  const testEnv: ServerEnv = {
+    DATABASE_URL: withDatabase(server.DATABASE_URL, database),
+    PAYLOAD_SECRET: randomBytes(32).toString('hex'),
+    S3_ENDPOINT: server.S3_ENDPOINT,
+    S3_BUCKET: bucket,
+    S3_ACCESS_KEY_ID: server.S3_ACCESS_KEY_ID,
+    S3_SECRET_ACCESS_KEY: server.S3_SECRET_ACCESS_KEY,
+  }
+  // The names are generated above, so this cannot fail; it also makes the identifiers safe to
+  // interpolate into CREATE/DROP DATABASE below.
+  assertThrowawayTarget(testEnv)
+  const s3 = new S3Client(s3ClientConfig(testEnv))
+
+  const teardown = async (): Promise<void> => {
+    const errors: unknown[] = []
+    try {
+      // The workers have exited; FORCE also ends any connection a crashed worker left behind.
+      await adminQuery(adminUrl, `DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`)
+    } catch (error) {
+      errors.push(error)
+    }
+    try {
+      await deleteBucket(s3, bucket)
+    } catch (error) {
+      errors.push(error)
+    }
+    s3.destroy()
+    if (errors.length > 0) {
+      throw new AggregateError(errors, `[int setup] teardown failed for ${database} / ${bucket}`)
+    }
+  }
+
+  console.log(`[int setup] throwaway database ${database}, bucket ${bucket}`)
+  try {
+    await adminQuery(adminUrl, `CREATE DATABASE "${database}"`)
+    await s3.send(new CreateBucketCommand({ Bucket: bucket }))
+    Object.assign(process.env, testEnv)
+    project.provide('testEnv', testEnv)
+    // The child gets the run's env explicitly; the CLI's own .env loading never overrides a set
+    // variable, so it cannot fall back to the dev database.
+    await migrate(project.config.root, { ...process.env, ...testEnv })
+  } catch (error) {
+    await teardown().catch((teardownError: unknown) => console.error(teardownError))
+    throw error
+  }
+  return teardown
+}
+
+const MIGRATE_TIMEOUT_MS = 180_000
+
+/** Runs `payload migrate` (the committed migrations) against env.DATABASE_URL. */
+async function migrate(root: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const bin = path.join(root, 'node_modules', 'payload', 'bin.js')
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(process.execPath, [bin, 'migrate'], {
+      cwd: root,
+      env,
+      // No stdin: a confirmation prompt (only shown for a dev-pushed database) cannot wait for
+      // input, and the timeout stops anything else that hangs.
+      stdio: ['ignore', 'inherit', 'inherit'],
+      timeout: MIGRATE_TIMEOUT_MS,
+    })
+    child.on('error', reject)
+    child.on('exit', (code, signal) => {
+      if (code === 0) resolve()
+      else reject(new Error(`[int setup] payload migrate failed (${signal ?? `exit ${code}`})`))
+    })
+  })
+}
+
+function withDatabase(connectionString: string, database: string): string {
+  const url = new URL(connectionString)
+  url.pathname = `/${database}`
+  return url.toString()
+}
+
+async function adminQuery(connectionString: string, sql: string): Promise<void> {
+  const client = new pg.Client({ connectionString })
+  await client.connect()
+  try {
+    await client.query(sql)
+  } finally {
+    await client.end()
+  }
+}
+
+async function deleteBucket(s3: S3Client, bucket: string): Promise<void> {
+  let continuationToken: string | undefined
+  do {
+    let page
+    try {
+      page = await s3.send(
+        new ListObjectsV2Command({ Bucket: bucket, ContinuationToken: continuationToken }),
+      )
+    } catch (error) {
+      if ((error as { name?: string }).name === 'NoSuchBucket') return
+      throw error
+    }
+    const objects = (page.Contents ?? []).flatMap(({ Key }) => (Key ? [{ Key }] : []))
+    if (objects.length > 0) {
+      await s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: objects } }))
+    }
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined
+  } while (continuationToken)
+  await s3.send(new DeleteBucketCommand({ Bucket: bucket }))
+}

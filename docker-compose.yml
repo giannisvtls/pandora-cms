@@ -1,0 +1,47 @@
+# Local backing services for development and tests. The CMS itself runs on the host (`npm run dev`).
+# Host ports avoid the usual 5432 / 9000 / 9001, and bind to 127.0.0.1 only. The credentials are
+# local-only defaults that match .env.example; never reuse them on a server.
+name: pandora-cms
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pandora_cms
+    ports:
+      - '127.0.0.1:5442:5432'
+    volumes:
+      # postgres 18 keeps PGDATA under /var/lib/postgresql/18/docker; mount the parent.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d pandora_cms']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    restart: unless-stopped
+    command: ['server', '/data', '--console-address', ':9001']
+    environment:
+      MINIO_ROOT_USER: pandora-local
+      MINIO_ROOT_PASSWORD: pandora-local-secret
+    ports:
+      - '127.0.0.1:9100:9000' # S3 API
+      - '127.0.0.1:9101:9001' # web console
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:9000/minio/health/live']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  pgdata:
+  miniodata:
