@@ -91,7 +91,10 @@ function describeError(error: unknown): string {
   const lines: string[] = [];
   let current: unknown = error;
   for (let depth = 0; current instanceof Error && depth < 4; depth++) {
-    lines.push(`  ${depth > 0 ? 'caused by ' : ''}${current.name}: ${current.message}`);
+    // A failed query's message ends with "\nparams: …", which can hold the new user's salt and
+    // hash: keep only the query line (the cause carries the Postgres error).
+    const message = current.message.split('\nparams:')[0];
+    lines.push(`  ${depth > 0 ? 'caused by ' : ''}${current.name}: ${message}`);
     const fieldErrors = (current as { data?: { errors?: unknown } }).data?.errors;
     if (Array.isArray(fieldErrors)) {
       for (const item of fieldErrors as { path?: unknown; message?: unknown }[]) {

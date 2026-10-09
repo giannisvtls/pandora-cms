@@ -1,7 +1,9 @@
 // Boot smoke for the admin, with Node's fetch (no browser):
 //   1. GET  <base>/admin            answers 200;
-//   2. POST <base>/api/users/login  with SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD (process env first,
-//      then .env) answers 200 with a token. Run `npm run seed` first.
+//   2. POST <base>/api/users/login  with SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD answers 200 with a
+//      token. Run `npm run seed` first. Both scripts load the environment with the Payload CLI's
+//      loader (process env first, then .env, .env.local, .env.development…, with `$NAME`
+//      expansion), so they always agree on the password.
 // It never prints the password or the token.
 //
 //   npm run smoke                    starts `next dev` on a free port chosen by the OS, waits for
@@ -21,7 +23,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-import { loadDotEnvFile, requireEnv } from '../src/env';
+import { loadEnv } from 'payload/node';
+
+import { requireEnv } from '../src/env';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const NEXT_BIN = path.join(ROOT, 'node_modules', 'next', 'dist', 'bin', 'next');
@@ -38,6 +42,10 @@ const SIGTERM_GRACE_MS = 5_000;
 const AVOID_PORTS = new Set([3000, 5432, 5442, 9000, 9001, 9100, 9101]);
 // Lines of `next dev` output kept to print when the smoke fails.
 const LOG_TAIL_LINES = 60;
+// Signals that stop the dev server before the smoke exits.
+const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+// Windows: taskkill by full path, so a taskkill.exe in the working directory is never run.
+const TASKKILL = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
 
 const USAGE = `Usage:
   npm run smoke                    start next dev on a free port, check it, stop it
@@ -70,7 +78,8 @@ async function main(): Promise<number> {
 
   let credentials: Credentials;
   try {
-    loadDotEnvFile(path.join(ROOT, '.env'));
+    // The loader `payload run` (the seed) uses, in dev mode like `next dev`.
+    loadEnv(ROOT);
     const env = requireEnv(['SEED_ADMIN_EMAIL', 'SEED_ADMIN_PASSWORD']);
     credentials = { email: env.SEED_ADMIN_EMAIL.trim(), password: env.SEED_ADMIN_PASSWORD };
   } catch (error) {
@@ -151,11 +160,12 @@ async function withDevServer(checks: (base: string) => Promise<void>): Promise<v
       .catch((error: unknown) => console.error(redact(`smoke: FAIL: ${describe(error)}`)))
       .finally(() => process.exit(130));
   };
-  process.on('SIGINT', onSignal);
-  process.on('SIGTERM', onSignal);
+  // SIGHUP: a closed terminal; on POSIX the detached server would not get the hangup itself.
+  for (const signal of STOP_SIGNALS) process.on(signal, onSignal);
   // Last resort if the process exits some other way: kill the tree synchronously.
   const onExit = (): void => killTreeSync(server);
   process.on('exit', onExit);
+  let stopped = false;
 
   let failure: Error | undefined;
   try {
@@ -172,14 +182,15 @@ async function withDevServer(checks: (base: string) => Promise<void>): Promise<v
 
   try {
     await stop();
+    stopped = true;
   } catch (error) {
     // Report a failed stop too, without hiding the check that failed first.
     if (!failure) throw error;
     console.error(redact(`smoke: FAIL: ${describe(error)}`));
   } finally {
-    process.removeListener('SIGINT', onSignal);
-    process.removeListener('SIGTERM', onSignal);
-    process.removeListener('exit', onExit);
+    for (const signal of STOP_SIGNALS) process.removeListener(signal, onSignal);
+    // After a failed stop, keep the last-resort kill for when the smoke exits.
+    if (stopped) process.removeListener('exit', onExit);
   }
   if (failure) throw failure;
 }
@@ -301,11 +312,16 @@ function killTreeSync(server: DevServer): void {
   const { pid } = server.child;
   if (pid === undefined || server.exited) return;
   if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], {
+    const result = spawnSync(TASKKILL, ['/F', '/T', '/PID', String(pid)], {
       stdio: 'ignore',
       windowsHide: true,
       timeout: 30_000,
     });
+    // 128: no such process (it exited meanwhile). Anything else is reported, never ignored.
+    if (result.error || (result.status !== 0 && result.status !== 128)) {
+      const reason = result.error ? describe(result.error) : `exit code ${String(result.status)}`;
+      console.error(`smoke: taskkill of next dev (pid ${pid}) failed: ${reason}`);
+    }
   } else {
     signalGroup(pid, 'SIGKILL');
   }

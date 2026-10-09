@@ -131,15 +131,17 @@ describe.concurrent('seed: admin user from SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWOR
 
       // The email as typed differently (Payload stores it trimmed and lowercased) and another
       // password: still the same user, and the password is never reset.
+      const otherPassword = sentinelPassword();
       const third = await runSeed({
         SEED_ADMIN_EMAIL: ` ${email.toUpperCase()} `,
-        SEED_ADMIN_PASSWORD: sentinelPassword(),
+        SEED_ADMIN_PASSWORD: otherPassword,
       });
       expect(third.code, third.output).toBe(0);
       expect(third.stdout).toContain(`seed: admin user ${email} already exists`);
       expect(await usersWithEmail(email)).toEqual(created);
 
       for (const run of [first, second, third]) expect(run.output).not.toContain(password);
+      expect(third.output).not.toContain(otherPassword);
     },
     3 * RUN_TIMEOUT_MS,
   );
