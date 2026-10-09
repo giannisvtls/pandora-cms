@@ -30,7 +30,15 @@ npm run smoke -- --url http://localhost:3000   # /admin 200 and the admin login 
 ```
 
 With no dev server running, `npm run smoke` starts its own `next dev` on a free port, runs the
-same checks and stops it.
+same checks and stops it. Like `npm run dev`, it pushes the schema into `DATABASE_URL`'s database,
+so point it only at the dev database.
+
+For a database that only ever gets migrations (a fresh one, a server), apply the committed
+migrations instead of the dev push, before `npm run seed`:
+
+```sh
+npm run payload -- migrate   # never on a database `next dev` has touched: it prompts (docs/gotchas.md)
+```
 
 ## Checks
 
