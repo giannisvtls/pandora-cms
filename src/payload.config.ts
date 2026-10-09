@@ -8,6 +8,7 @@ import sharp from 'sharp';
 
 import { Users } from './collections/Users';
 import { Media } from './collections/Media';
+import { Products } from './collections/Products';
 import { readServerEnv, s3ClientConfig } from './env';
 
 const filename = fileURLToPath(import.meta.url);
@@ -23,8 +24,20 @@ export default buildConfig({
       baseDir: path.resolve(dirname),
     },
   },
-  collections: [Users, Media],
+  collections: [Users, Media, Products],
   editor: lexicalEditor(),
+  localization: {
+    locales: [
+      { code: 'en', label: 'English' },
+      { code: 'el', label: 'Ελληνικά' },
+      { code: 'it', label: 'Italiano' },
+      { code: 'sq', label: 'Shqip' },
+    ],
+    defaultLocale: 'en',
+    // Payload defaults to true, which would serve the English value for a field missing in another
+    // locale. A missing translation must read as missing, never as English filler.
+    fallback: false,
+  },
   // Admin + REST only: the static site reads content over REST, so the GraphQL endpoint is off.
   graphQL: {
     disable: true,
