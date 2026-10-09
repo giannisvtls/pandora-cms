@@ -5,8 +5,8 @@ Traps hit while building this repo, and how to avoid them.
 ## Production image (`Dockerfile`)
 
 - **Sizes** (`docker image inspect`, 2026-10-09): the app image (`docker build .`) is about
-  245 MB (`node:24-alpine` is 171 MB of it; the standalone server and its traced files about
-  75 MB). The migrate image (`--target migrate`: full `node_modules` + source) is about 1.1 GB.
+  243 MB (`node:24-alpine` is 171 MB of it; the standalone server and its traced files about
+  72 MB). The migrate image (`--target migrate`: full `node_modules` + source) is about 1.1 GB.
 - **The app build needs about 3 GB of memory.** `next build` (Turbopack) compiling the Payload
   admin peaked near 3 GB on a dev machine. In a Docker VM with 2 GB it dies during "Creating an
   optimized production build" with `ResourceExhausted … cannot allocate memory`. Give Docker at

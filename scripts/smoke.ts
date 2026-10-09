@@ -291,11 +291,11 @@ async function stopServer(server: DevServer, port: number): Promise<void> {
     killTreeSync(server);
   } else if (child.pid !== undefined) {
     signalGroup(child.pid, 'SIGTERM');
-    await Promise.race([server.whenExited, sleep(SIGTERM_GRACE_MS)]);
+    await within(server.whenExited, SIGTERM_GRACE_MS);
     // Also catches workers that outlive their parent.
     signalGroup(child.pid, 'SIGKILL');
   }
-  await Promise.race([server.whenExited, sleep(PORT_RELEASE_TIMEOUT_MS)]);
+  await within(server.whenExited, PORT_RELEASE_TIMEOUT_MS);
   if (!server.exited) {
     throw new Error(`next dev (pid ${child.pid}) is still running after being stopped`);
   }
@@ -467,6 +467,22 @@ function redactor(secrets: readonly string[]): (text: string) => string {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Waits for `promise` or `ms`, whichever comes first, then clears the timer: a pending timer would
+ * keep the smoke alive after the server has exited.
+ */
+async function within(promise: Promise<void>, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<void>((resolve) => (timer = setTimeout(resolve, ms))),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`;
 
 /** Waits until stdout and stderr have written everything (they can be async pipes on Windows). */

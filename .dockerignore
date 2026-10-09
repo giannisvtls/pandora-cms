@@ -5,11 +5,23 @@
 **/.env*
 *.pem
 **/*.pem
+*.key
+**/*.key
+.npmrc
+**/.npmrc
 
-# Version control, editor settings, git hook shims
+# Database dumps
+*.sql
+*.dump
+
+# Version control, CI, editor and tool settings, git hook shims
 .git
+.github
 .husky/_
 .vscode
+.idea
+.vercel
+.claude
 
 # Dependencies and build output: the image installs and builds its own
 node_modules
