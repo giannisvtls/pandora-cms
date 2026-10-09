@@ -1,7 +1,8 @@
 // ESLint 9 flat config. Next's own flat config (core web vitals + its TypeScript rules) covers all
 // files; typescript-eslint's type-aware recommended rules cover src/, scripts/ and tests/. Generated
 // files are ignored: regenerate them (`npm run generate:types`, `generate:importmap`,
-// `payload migrate:create`), never hand-edit them.
+// `payload migrate:create`) instead of editing them. One exception: a new migration's generated
+// down() needs a hand edit (docs/gotchas.md, Migrations).
 import { defineConfig, globalIgnores } from 'eslint/config';
 import nextCoreWebVitals from 'eslint-config-next/core-web-vitals';
 import nextTypescript from 'eslint-config-next/typescript';

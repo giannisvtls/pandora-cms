@@ -196,7 +196,8 @@ async function payloadMigrate(
           step === 0
             ? ''
             : " A migration's down() does not undo its up(): drizzle-kit's generated down() " +
-              'can need fixing by hand (see src/migrations/20261009_001903_products.ts).';
+              'can need fixing by hand, as it does for every new collection (docs/gotchas.md, ' +
+              'Migrations).';
         reject(
           new Error(
             `[int setup] payload ${command} (step ${step + 1} of ${MIGRATION_STEPS.length}) ` +
