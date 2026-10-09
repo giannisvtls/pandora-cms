@@ -2,8 +2,7 @@
 //
 // Validation fails with the names of the missing variables only. It never prints a value, because
 // several of them (PAYLOAD_SECRET, S3_SECRET_ACCESS_KEY, the password in DATABASE_URL) are secrets.
-import { readFileSync } from 'node:fs';
-import { parseEnv } from 'node:util';
+// The Payload config imports this module: no file reads here (see src/env-file.ts).
 
 export const SERVER_ENV_NAMES = [
   'DATABASE_URL',
@@ -39,24 +38,6 @@ export function requireEnv<K extends string>(
 /** Every variable the Payload config needs. */
 export function readServerEnv(source: NodeJS.ProcessEnv = process.env): ServerEnv {
   return requireEnv(SERVER_ENV_NAMES, source);
-}
-
-/**
- * Fills unset variables from a dotenv file, the way Next and the Payload CLI do: a variable that
- * is already set (even to an empty string) wins over the file. A missing file is not an error.
- * Only plain scripts and the test setup need this; `next` and `payload` load `.env` themselves.
- */
-export function loadDotEnvFile(file = '.env', target: NodeJS.ProcessEnv = process.env): void {
-  let text: string;
-  try {
-    text = readFileSync(file, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-    throw error;
-  }
-  for (const [name, value] of Object.entries(parseEnv(text))) {
-    if (target[name] === undefined) target[name] = value;
-  }
 }
 
 /** S3 client settings for MinIO (path-style URLs); shared by the storage adapter and scripts. */

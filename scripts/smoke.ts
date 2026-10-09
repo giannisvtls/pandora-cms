@@ -479,5 +479,10 @@ async function flushed(code: number): Promise<number> {
   return code;
 }
 
-// Explicit exit: fetch's keep-alive sockets would otherwise hold the process open for a while.
-process.exit(await flushed(await main()));
+// No process.exit() right away: on Windows, Node 24 aborts with "Assertion failed:
+// !(handle->flags & UV_HANDLE_CLOSING)" (exit code 127) when it exits while fetch still holds a
+// keep-alive socket, e.g. after a PASS against `next start` or the image. Idle keep-alive sockets
+// do not keep the process alive, so it ends on its own; the unref'd timer only forces an exit if
+// some other handle would keep it running.
+process.exitCode = await flushed(await main());
+setTimeout(() => process.exit(), 10_000).unref();

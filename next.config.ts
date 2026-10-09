@@ -7,6 +7,12 @@ const __filename = fileURLToPath(import.meta.url);
 const dirname = path.dirname(__filename);
 
 const nextConfig: NextConfig = {
+  // The production image (Dockerfile) runs `.next/standalone/server.js`: only the traced runtime
+  // files, no full node_modules.
+  output: 'standalone',
+  // No `X-Powered-By` header. With this set to false, `withPayload` also skips its own
+  // `X-Powered-By: Next.js, Payload` header.
+  poweredByHeader: false,
   images: {
     localPatterns: [
       {

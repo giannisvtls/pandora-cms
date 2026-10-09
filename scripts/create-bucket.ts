@@ -5,7 +5,8 @@
 //   npm run create-bucket
 import { CreateBucketCommand, HeadBucketCommand, S3Client } from '@aws-sdk/client-s3';
 
-import { loadDotEnvFile, requireEnv, s3ClientConfig } from '../src/env';
+import { requireEnv, s3ClientConfig } from '../src/env';
+import { loadDotEnvFile } from '../src/env-file';
 
 loadDotEnvFile();
 const env = requireEnv(['S3_ENDPOINT', 'S3_BUCKET', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY']);

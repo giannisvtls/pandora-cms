@@ -27,7 +27,8 @@ import path from 'node:path';
 import pg from 'pg';
 import type { TestProject } from 'vitest/node';
 
-import { loadDotEnvFile, requireEnv, s3ClientConfig, type ServerEnv } from '../../src/env';
+import { requireEnv, s3ClientConfig, type ServerEnv } from '../../src/env';
+import { loadDotEnvFile } from '../../src/env-file';
 import {
   assertThrowawayTarget,
   parseDatabaseUrl,

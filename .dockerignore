@@ -1,0 +1,37 @@
+# Keeps the build context (everything `COPY . .` can reach) free of secrets and local state.
+
+# Secrets: every .env* file holds real values (.env.example is not needed in an image), keys
+.env*
+**/.env*
+*.pem
+**/*.pem
+
+# Version control, editor settings, git hook shims
+.git
+.husky/_
+.vscode
+
+# Dependencies and build output: the image installs and builds its own
+node_modules
+**/node_modules
+.next
+out
+build
+next-env.d.ts
+*.tsbuildinfo
+
+# Local uploads at the repo root (media lives in MinIO)
+media
+
+# Test and scratch output, logs
+coverage
+test-results
+playwright-report
+*.log
+**/*.log
+.DS_Store
+
+# The Docker files themselves (editing them must not invalidate the `COPY . .` layer)
+Dockerfile
+.dockerignore
+docker-compose.yml

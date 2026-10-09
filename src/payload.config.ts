@@ -43,6 +43,9 @@ export default buildConfig({
     disable: true,
   },
   secret: env.PAYLOAD_SECRET,
+  // Payload sends anonymous usage events to its servers by default (and writes an id file under
+  // the user's home directory). Off: no outbound calls from the CMS beyond Postgres and MinIO.
+  telemetry: false,
   typescript: {
     // Payload regenerates this file on init outside production. Only `next dev` should: tests,
     // scripts and the CLI would otherwise rewrite the committed file on every run (concurrently,
