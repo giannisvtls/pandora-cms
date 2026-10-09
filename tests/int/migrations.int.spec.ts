@@ -8,7 +8,8 @@
 //      way `payload migrate:create` diffs them, generates no statement. This also catches type,
 //      nullability, default, index, unique, foreign-key and enum drift. (drizzle-kit's push diff
 //      against the live database is not used: it always plans `users.login_attempts SET DEFAULT
-//      0`, a numeric default its introspection never matches.)
+//      0`, a numeric default its introspection never matches.) With column-set drift (check 2)
+//      it fails at once instead: drizzle-kit would stop to ask about renames.
 // After a config change: `payload migrate:create <name>` (with NODE_ENV not `development`).
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -58,25 +59,22 @@ describe('committed migrations match the config', () => {
   );
 
   it('has exactly the columns the config defines, table by table', async () => {
-    const expected = new Set<string>();
-    for (const table of Object.values(db.tables) as PgTable[]) {
-      const { name, columns } = getTableConfig(table);
-      for (const column of columns) expected.add(`${name}.${column.name}`);
-    }
-    const { rows } = await db.drizzle.execute<{ qualified_name: string }>(sql`
-      select table_name || '.' || column_name as qualified_name
-      from information_schema.columns
-      where table_schema = current_schema()
-    `);
-    const actual = new Set(rows.map((row) => row.qualified_name));
-
-    expect({
-      missingFromDatabase: [...expected].filter((column) => !actual.has(column)).sort(),
-      notInConfig: [...actual].filter((column) => !expected.has(column)).sort(),
-    }).toEqual({ missingFromDatabase: [], notInConfig: [] });
+    expect(await columnDrift()).toEqual({ missingFromDatabase: [], notInConfig: [] });
   });
 
   it('has a newest migration snapshot equal to the config', async () => {
+    // When one table both loses and gains columns (a renamed field, a renamed collection),
+    // drizzle-kit's generateMigration asks on the terminal whether it was a rename and waits for an
+    // answer: this test would time out with the prompt printed (and could read keystrokes on a
+    // TTY). That drift always shows as column-set drift, so fail on it here without asking.
+    const drift = await columnDrift();
+    if (drift.missingFromDatabase.length > 0 || drift.notInConfig.length > 0) {
+      throw new Error(
+        'column-set drift found — see the column check; snapshot diff skipped because ' +
+          'drizzle-kit would prompt for renames',
+      );
+    }
+
     // The same steps as `payload migrate:create` (@payloadcms/drizzle's buildCreateMigration):
     // the newest .json by name, upgraded first if drizzle-kit's snapshot format moved on.
     const fromConfig = await kit.generateDrizzleJson(db.schema);
@@ -94,3 +92,22 @@ describe('committed migrations match the config', () => {
     expect(await kit.generateMigration(snapshot, fromConfig), `config vs ${newest}`).toEqual([]);
   });
 });
+
+/** The config's columns missing from the database, and the database's columns not in the config. */
+async function columnDrift(): Promise<{ missingFromDatabase: string[]; notInConfig: string[] }> {
+  const expected = new Set<string>();
+  for (const table of Object.values(db.tables) as PgTable[]) {
+    const { name, columns } = getTableConfig(table);
+    for (const column of columns) expected.add(`${name}.${column.name}`);
+  }
+  const { rows } = await db.drizzle.execute<{ qualified_name: string }>(sql`
+    select table_name || '.' || column_name as qualified_name
+    from information_schema.columns
+    where table_schema = current_schema()
+  `);
+  const actual = new Set(rows.map((row) => row.qualified_name));
+  return {
+    missingFromDatabase: [...expected].filter((column) => !actual.has(column)).sort(),
+    notInConfig: [...actual].filter((column) => !expected.has(column)).sort(),
+  };
+}

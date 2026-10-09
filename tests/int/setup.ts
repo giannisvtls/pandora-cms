@@ -8,10 +8,11 @@
 //   1. create the database and the bucket;
 //   2. put the run's env in process.env (inherited by the workers) and provide it to the workers
 //      (applied by vitest.setup.ts before a test file imports the config);
-//   3. apply the committed migrations to the new database with `payload migrate`, in a child
-//      process: the Postgres adapter keeps a pool client checked out until the process exits
-//      (`payload.destroy()` does not end the pool), so an in-process Payload here would hold a
-//      connection that the teardown's DROP DATABASE then kills, crashing the run.
+//   3. apply the committed migrations to the new database, undo them and apply them again
+//      (MIGRATION_STEPS), so every run also proves each migration's down(). Each step is a
+//      `payload` CLI child process: the Postgres adapter keeps a pool client checked out until the
+//      process exits (`payload.destroy()` does not end the pool), so an in-process Payload here
+//      would hold a connection that the teardown's DROP DATABASE then kills, crashing the run.
 // Teardown drops the database and empties and deletes the bucket.
 import {
   CreateBucketCommand,
@@ -85,9 +86,18 @@ export default async function setup(project: TestProject): Promise<() => Promise
     await s3.send(new CreateBucketCommand({ Bucket: bucket }));
     Object.assign(process.env, testEnv);
     project.provide('testEnv', testEnv);
-    // The child gets the run's env explicitly; the CLI's own .env loading never overrides a set
+    // Each child gets the run's env explicitly; the CLI's own .env loading never overrides a set
     // variable, so it cannot fall back to the dev database.
-    await migrate(project.config.root, { ...process.env, ...testEnv }, migrateTimeoutMs);
+    const childEnv = { ...process.env, ...testEnv };
+    const started = Date.now();
+    const deadline = started + migrateTimeoutMs;
+    const timings: string[] = [];
+    for (const [step, command] of MIGRATION_STEPS.entries()) {
+      const stepStarted = Date.now();
+      await payloadMigrate(project.config.root, step, childEnv, deadline, migrateTimeoutMs);
+      timings.push(`${command} ${seconds(Date.now() - stepStarted)}`);
+    }
+    console.log(`[int setup] ${timings.join(', ')} (total ${seconds(Date.now() - started)})`);
   } catch (error) {
     await teardown().catch((teardownError: unknown) => console.error(teardownError));
     throw error;
@@ -95,10 +105,20 @@ export default async function setup(project: TestProject): Promise<() => Promise
   return teardown;
 }
 
-// A migrate on an idle host takes seconds; a loaded one (parallel builds, Docker) has taken minutes.
-// The default stays under 10 minutes, a common limit for a single foreground command, so a hung
-// migrate is stopped here, and the teardown still drops the database and bucket, before the caller
-// kills the whole run.
+// The throwaway database is new, so the first `migrate` puts every migration in batch 1 and:
+//   - `migrate:down` rolls back that batch, i.e. every migration, newest first (the reverse of
+//     up(), as a production rollback runs them);
+//   - `migrate:reset` runs every down() again in Payload 3.90.2's own order, oldest first, so a
+//     down() that needs a table an older migration created must cope with it being gone;
+//   - the last `migrate` leaves the database fully migrated for the tests.
+// A failed down() stops the run here, before any test. Not `migrate:refresh`: in 3.90.2 it calls
+// each up() without `db`, so every generated migration throws.
+const MIGRATION_STEPS = ['migrate', 'migrate:down', 'migrate', 'migrate:reset', 'migrate'] as const;
+
+// One `payload` CLI step takes about 8 s on an idle host (mostly loading the config); a loaded host
+// (parallel builds, Docker) has taken minutes for one. The limit covers all the steps together and
+// stays under 10 minutes, a common limit for a single foreground command, so a hung step is stopped
+// here, and the teardown still drops the database and bucket, before the caller kills the whole run.
 const DEFAULT_MIGRATE_TIMEOUT_MS = 480_000;
 // setTimeout's limit (2^31 - 1 ms, about 24.8 days); a larger delay fires after 1 ms instead.
 const MAX_MIGRATE_TIMEOUT_MS = 2_147_483_647;
@@ -117,13 +137,25 @@ function readMigrateTimeoutMs(env: NodeJS.ProcessEnv): number {
   return value;
 }
 
-/** Runs `payload migrate` (the committed migrations) against env.DATABASE_URL. */
-async function migrate(root: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<void> {
+const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`;
+
+/**
+ * Runs `payload <MIGRATION_STEPS[step]>` (on the committed migrations) against env.DATABASE_URL,
+ * stopping it at `deadline` (the shared limit of all the steps, `limitMs` long).
+ */
+async function payloadMigrate(
+  root: string,
+  step: number,
+  env: NodeJS.ProcessEnv,
+  deadline: number,
+  limitMs: number,
+): Promise<void> {
+  const command = MIGRATION_STEPS[step];
   const bin = path.join(root, 'node_modules', 'payload', 'bin.js');
   const started = Date.now();
-  const elapsed = (): string => `${((Date.now() - started) / 1000).toFixed(1)}s`;
+  const elapsed = (): string => seconds(Date.now() - started);
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, [bin, 'migrate'], {
+    const child = spawn(process.execPath, [bin, command], {
       cwd: root,
       env,
       // No stdin: a confirmation prompt (only shown for a dev-pushed database) cannot wait for
@@ -131,10 +163,13 @@ async function migrate(root: string, env: NodeJS.ProcessEnv, timeoutMs: number):
       stdio: ['ignore', 'inherit', 'inherit'],
     });
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, timeoutMs);
+    const timer = setTimeout(
+      () => {
+        timedOut = true;
+        child.kill();
+      },
+      Math.max(deadline - started, 0),
+    );
     child.on('error', (error) => {
       clearTimeout(timer);
       reject(error);
@@ -146,17 +181,25 @@ async function migrate(root: string, env: NodeJS.ProcessEnv, timeoutMs: number):
       } else if (timedOut) {
         reject(
           new Error(
-            `[int setup] payload migrate was stopped after ${elapsed()} (limit ${timeoutMs} ms). ` +
-              'A loaded host can need longer: raise INT_MIGRATE_TIMEOUT_MS. A migrate that waits ' +
-              'on a "data loss" confirmation means the database was pushed by next dev; the ' +
-              "run's throwaway database never should be.",
+            `[int setup] payload ${command} was stopped after ${elapsed()}: the steps ` +
+              `${MIGRATION_STEPS.join(', ')} share a limit of ${limitMs} ms. A loaded host can ` +
+              'need longer: raise INT_MIGRATE_TIMEOUT_MS. A migrate that waits on a "data loss" ' +
+              "confirmation means the database was pushed by next dev; the run's throwaway " +
+              'database never should be.',
           ),
         );
       } else {
+        // Past the first step, a failure means a down() that fails or leaves part of its up()
+        // behind (then the next migrate finds it).
+        const hint =
+          step === 0
+            ? ''
+            : " A migration's down() does not undo its up(): drizzle-kit's generated down() " +
+              'can need fixing by hand (see src/migrations/20261009_001903_products.ts).';
         reject(
           new Error(
-            `[int setup] payload migrate failed (${signal ?? `exit ${code}`}) after ${elapsed()}; ` +
-              'its output is above.',
+            `[int setup] payload ${command} (step ${step + 1} of ${MIGRATION_STEPS.length}) ` +
+              `failed (${signal ?? `exit ${code}`}) after ${elapsed()}; its output is above.${hint}`,
           ),
         );
       }

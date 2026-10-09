@@ -26,14 +26,25 @@ export async function up({ db, payload, req }: MigrateUpArgs): Promise<void> {
 }
 
 export async function down({ db, payload, req }: MigrateDownArgs): Promise<void> {
+  // Edited by hand; up() and the .json snapshot are as generated. drizzle-kit's down() dropped
+  // "products" CASCADE first, which already removes payload_locked_documents_rels_products_fk, so
+  // its later DROP CONSTRAINT failed and every rollback exited 1. Two changes:
+  //   1. the payload_locked_documents_rels statements run first (the reverse of up());
+  //   2. they run only while that table exists: Payload 3.90.2's migrate:reset runs the down()s
+  //      oldest first, so the initial migration's down() has already dropped the table (and this
+  //      column with it). While the table exists, each statement is strict (no IF EXISTS), so a
+  //      schema that does not match this migration still fails.
   await db.execute(sql`
-   ALTER TABLE "products" DISABLE ROW LEVEL SECURITY;
+   DO $$ BEGIN
+    IF to_regclass('payload_locked_documents_rels') IS NOT NULL THEN
+      ALTER TABLE "payload_locked_documents_rels" DROP CONSTRAINT "payload_locked_documents_rels_products_fk";
+      DROP INDEX "payload_locked_documents_rels_products_id_idx";
+      ALTER TABLE "payload_locked_documents_rels" DROP COLUMN "products_id";
+    END IF;
+  END $$;
+  ALTER TABLE "products" DISABLE ROW LEVEL SECURITY;
   ALTER TABLE "products_locales" DISABLE ROW LEVEL SECURITY;
   DROP TABLE "products" CASCADE;
   DROP TABLE "products_locales" CASCADE;
-  ALTER TABLE "payload_locked_documents_rels" DROP CONSTRAINT "payload_locked_documents_rels_products_fk";
-  
-  DROP INDEX "payload_locked_documents_rels_products_id_idx";
-  ALTER TABLE "payload_locked_documents_rels" DROP COLUMN "products_id";
   DROP TYPE "public"."_locales";`)
 }
