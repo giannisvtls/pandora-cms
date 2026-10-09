@@ -88,8 +88,9 @@ Payload stays on 3.x (4.0 is a pre-release).
   connects to nothing).
 - `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` are for the seed and the smoke;
   `INT_MIGRATE_TIMEOUT_MS` (optional) for the tests.
-- A variable set in the process environment always wins over a file, so no `.env` is needed when
-  the environment carries everything (CI has none). Next, the Payload CLI (so the seed) and the
+- A variable set in the process environment wins over a file, so no `.env` is needed when the
+  environment carries everything (CI has none). While a `.env` that also defines it is present,
+  Next, the Payload CLI and the smoke still expand `$NAME` in it (see `docs/gotchas.md`). Next, the Payload CLI (so the seed) and the
   smoke read `.env`, `.env.local`, `.env.development`… with `$NAME` expansion; `create-bucket` and
   the test setup read `.env` only, literally (the `$` rule is in `docs/gotchas.md`).
 
@@ -118,7 +119,7 @@ npm and every script must run on Node 24 (`docs/gotchas.md`, Runtime). `dev`, `t
 | `npm run generate:types`        | Regenerate `src/payload-types.ts`                                                            |
 | `npm run generate:importmap`    | Regenerate the admin import map, `src/app/(payload)/admin/importMap.js`                      |
 | `npm run payload -- <command>`  | The Payload CLI: `migrate`, `migrate:status`, `migrate:create <name>`, `migrate:down`, ...   |
-| `npm run prepare`               | `husky` (runs on `npm ci`; installs the pre-commit hook)                                     |
+| `npm run prepare`               | `husky \|\| true` (runs on `npm ci`; installs the pre-commit hook, never fails the install)  |
 
 - The CI order, reproducible locally: `npm ci`, `npm run lint`, `npm run format:check`,
   `npm run typecheck`, `npm run test`, `npm run build`, then `docker build --target migrate .`
@@ -216,7 +217,8 @@ non-zero naming a missing variable, on an unmigrated database (with a hint to ru
   3 GB of memory.
 - **`migrate`:** built from the `source` stage (full dependencies + source, no Next build), so it
   carries no build cache and builds without the 3 GB `next build`.
-- **No secret in either image.** The six variables are given at run time (`-e` or an env file);
+- **No secret in either image.** The six variables are given at run time (`-e` or an env file,
+  whose values Docker reads literally);
   the build's dummy values exist only inside one `RUN`. `.dockerignore` keeps `.env*`, keys,
   dumps, `.git`, `node_modules` and `.next` out of the build context.
 - **Release order:** run `migrate` against the database first, with a timeout, and check

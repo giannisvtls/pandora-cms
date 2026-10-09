@@ -46,14 +46,18 @@ shape.
 
 - **Env is validated at config load.** Every `payload` CLI command, `next dev` and `next build`
   load the config, which refuses to start without the six server variables. Rule: set all six,
-  with any values for a build. Values are not trimmed: a trailing space in `.env` stays part of
-  the value.
+  with any values for a build. The `.env` loaders trim unquoted values, but a quoted value
+  (`X="foo "`) or one set in the process environment keeps its spaces, and `src/env.ts` passes it
+  on as is (it refuses only an all-blank value).
 - **`$` in `.env` values.** Next, the Payload CLI (so `npm run seed`) and the smoke expand `$NAME`
   in `.env` values (`\$` gives a literal `$`); `create-bucket` and the test setup read `.env`
   literally (`$NAME` stays as written and `\$` keeps its backslash). Rule: write a literal `$` as
   `\$` in `PAYLOAD_SECRET` and the `SEED_ADMIN_*` values, which only Next and the Payload CLI
-  read; keep `$` out of `DATABASE_URL` and the `S3_*` values, which both kinds read. Values set in
-  the process environment are never expanded.
+  read; keep `$` out of `DATABASE_URL` and the `S3_*` values, which both kinds read. A value set
+  in the process environment wins over the file, but Next, the Payload CLI and the smoke still
+  expand it (and turn `\$` into `$`) when a loaded `.env` file also defines that name; with no
+  `.env` (CI, the images) nothing is expanded. `docker run --env-file` reads values literally (no
+  `\$` unescape, no quote stripping): write a literal `$` there as is.
 - **`payload run` (the seed) has quirks.** It always exits 0, whatever the script did; it drops
   `--flags` given after the script; it loads `.env` from its working directory (searching
   upward), not from the script's folder; a blank variable counts as unset. Rule: run
@@ -102,8 +106,8 @@ shape.
 - **Never `payload migrate:refresh`.** In 3.90.2 it calls each `up()` without `db`, so every
   generated migration throws. Rule: `migrate:down` (or `migrate:reset`), then `migrate`.
 - **Never `payload migrate` on a database `next dev` touched.** It asks "data loss will occur…
-  (y/N)". Without a TTY (the test setup, the `migrate` image) it waits forever; with a TTY,
-  answering N exits 0 without migrating. Rule: migrate only databases that only ever saw
+  (y/N)". Without a TTY the `migrate` image waits until it is killed (the test setup gives its
+  steps no stdin and a timeout); with a TTY, answering N exits 0 without migrating. Rule: migrate only databases that only ever saw
   migrations, give a one-shot a timeout, and afterwards check `payload_migrations`
   (`npm run payload -- migrate:status`) instead of trusting the exit code.
 - **Plugins add columns: storage-s3's hidden `_objectKey`.** `@payloadcms/storage-s3` adds a
@@ -134,7 +138,7 @@ shape.
   test do).
 - **A hard-killed run leaves its database and bucket behind.** There is no sweep. Rule: when no
   test run is in progress, list them with
-  `docker compose exec -T postgres psql -U postgres -At -c "select datname from pg_database where datname like 'pandora_cms_test_%'"`,
+  `docker compose exec -T postgres psql -U postgres -At -c "select datname from pg_database where datname like 'pandora\_cms\_test\_%'"`,
   drop each with `DROP DATABASE "<name>" WITH (FORCE)`, and delete the `pandora-cms-test-*`
   buckets in the MinIO console (http://127.0.0.1:9101).
 - **Slow on a loaded host.** The five migrate steps take about 8 s each on an idle machine and
@@ -177,7 +181,8 @@ shape.
 - **Build-time env.** `next build` loads the Payload config, and `src/env.ts` refuses to load it
   without the six server variables. The Dockerfile sets obviously fake values for that one `RUN`
   only (`build-only…`, nothing connects at build time); no image carries them in its
-  environment. Pass all six with `-e` (or an env file kept off the image) when running either image.
+  environment. Pass all six with `-e` (or an env file kept off the image; `--env-file` values are
+  literal, see Environment) when running either image.
 - **Keep file reads out of the config's imports.** Turbopack cannot resolve `readFileSync(file)`
   with a variable path, so it traced the whole project directory, `.env` included, into every
   route that imports the config, and from there into `.next/standalone`. That is why
