@@ -1,1 +1,3 @@
 * text=auto eol=lf
+# Binary: never normalize line endings (a PNG header contains CR LF bytes)
+*.png binary
